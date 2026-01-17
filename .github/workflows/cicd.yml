@@ -9,11 +9,14 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
 
+    # 👇 REQUIRED because your secrets are Environment secrets
+    environment: dev
+
     steps:
     - name: Checkout Code
       uses: actions/checkout@v3
 
-    - name: Set up Node
+    - name: Set up Node.js
       uses: actions/setup-node@v3
       with:
         node-version: 18
@@ -21,15 +24,53 @@ jobs:
     - name: Install Dependencies
       run: npm install
 
+    # 🔍 Validate required secrets (prevents :latest error)
+    - name: Validate secrets
+      run: |
+        if [ -z "${{ secrets.DOCKER_IMAGE }}" ]; then
+          echo "❌ DOCKER_IMAGE secret is missing"
+          exit 1
+        fi
+        if [ -z "${{ secrets.DOCKER_USERNAME }}" ]; then
+          echo "❌ DOCKER_USERNAME secret is missing"
+          exit 1
+        fi
+        if [ -z "${{ secrets.DOCKER_PASSWORD }}" ]; then
+          echo "❌ DOCKER_PASSWORD secret is missing"
+          exit 1
+        fi
+        if [ -z "${{ secrets.EC2_HOST }}" ]; then
+          echo "❌ EC2_HOST secret is missing"
+          exit 1
+        fi
+        if [ -z "${{ secrets.EC2_USER }}" ]; then
+          echo "❌ EC2_USER secret is missing"
+          exit 1
+        fi
+        if [ -z "${{ secrets.EC2_SSH_KEY }}" ]; then
+          echo "❌ EC2_SSH_KEY secret is missing"
+          exit 1
+        fi
+        echo "✅ All required secrets are present"
+
+    # 🐳 Setup Docker build environment
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
     - name: Build Docker Image
-      run: docker build -t ${{ secrets.DOCKER_IMAGE }}:latest .
+      run: |
+        docker build -t ${{ secrets.DOCKER_IMAGE }}:latest .
 
-    - name: Docker Hub Login
-      run: echo "${{ secrets.DOCKER_PASSWORD }}" | docker login -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
+    - name: Login to Docker Hub
+      run: |
+        echo "${{ secrets.DOCKER_PASSWORD }}" | docker login \
+        -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
 
-    - name: Push Image to Docker Hub
-      run: docker push ${{ secrets.DOCKER_IMAGE }}:latest
+    - name: Push Docker Image to Docker Hub
+      run: |
+        docker push ${{ secrets.DOCKER_IMAGE }}:latest
 
+    # 🚀 Deploy to Amazon Linux 2023 EC2
     - name: Deploy to EC2
       uses: appleboy/ssh-action@v1.0.0
       with:
@@ -37,11 +78,18 @@ jobs:
         username: ${{ secrets.EC2_USER }}
         key: ${{ secrets.EC2_SSH_KEY }}
         script: |
+          echo "🔄 Pulling latest image"
           docker pull ${{ secrets.DOCKER_IMAGE }}:latest
+
+          echo "🛑 Stopping old container"
           docker stop node-app || true
           docker rm node-app || true
+
+          echo "🚀 Starting new container"
           docker run -d \
             --name node-app \
             -p 3000:3000 \
             --restart unless-stopped \
             ${{ secrets.DOCKER_IMAGE }}:latest
+
+          echo "✅ Deployment completed successfully"
